@@ -1,0 +1,69 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Stack to create resources for Github Actions OIDC.
+  
+Parameters:
+  IamRoleName:
+    Description: Name of the IAM role to create
+    Type: String
+  GithubOrganizationName:
+    Description: Name of the Github Organization to be trusted by the role
+    Type: String
+  GithubRepoName:
+    Description: Name of the Github repository (created in the trusted organization) to be trusted by the role
+    Type: String
+  TerraformS3BackendPolicyArn:
+    Description: ARN of the IAM Policy to be used by Terraform to access S3 Backend resources
+    Type: String
+
+Resources:
+  GithubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      ClientIdList:
+      - sts.amazonaws.com
+      ThumbprintList:
+      - 6938fd4d98bab03faadb97b34396831e3780aea1
+      Url: https://token.actions.githubusercontent.com
+      Tags:
+      - Key: "Name"
+        Value: "github-actions-oidc" 
+
+  GithubActionsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref IamRoleName
+      Description: !Sub "Role created for Github Actions for repo ${GithubRepoName} in organization ${GithubOrganizationName}"
+      AssumeRolePolicyDocument: !Sub |
+        {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Sid": "AllowGithubActions",
+                    "Effect": "Allow",
+                    "Principal": {
+                        "Federated": "arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com"
+                    },
+                    "Action": "sts:AssumeRoleWithWebIdentity",
+                    "Condition": {
+                        "StringLike": {
+                            "token.actions.githubusercontent.com:sub": "repo:${GithubOrganizationName}/${GithubRepoName}:*"
+                        },
+                        "ForAllValues:StringEquals": {
+                            "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+                            "token.actions.githubusercontent.com:iss": "https://token.actions.githubusercontent.com"
+                        }
+                    }
+                }
+            ]
+        }
+      ManagedPolicyArns:
+      - !Ref TerraformS3BackendPolicyArn
+      - "arn:aws:iam::aws:policy/AmazonVPCFullAccess"
+
+Outputs:
+    GithubOidcProviderArn:
+      Description: Github OIDC IAM Provider ARN
+      Value: !Ref GithubOidcProvider
+    GithubActionsRoleArn:
+      Description: Github Actions IAM Role ARN
+      Value: !GetAtt GithubActionsRole.Arn

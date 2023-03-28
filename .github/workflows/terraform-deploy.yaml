@@ -1,0 +1,163 @@
+name: Terraform deploy 🏗️🚀
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+    - main
+
+permissions:
+  id-token: write # This is required for requesting the JWT
+  contents: read  # This is required for actions/checkout
+
+env:
+  aws_iam_role_arn: "arn:aws:iam::365178742733:role/github-actions-role"
+  aws_region: "us-east-1"
+  gh_environment_name: "sandbox"
+  terraform_version: "1.4.2"
+  terraform_module_path: "terraform/010_module_a"
+  terraform_plan_bucket_name: "terraform-s3-backend-72189776"
+  terraform_plan_bucket_prefix: "actions-demo/plan/sandbox/010_module_a"
+
+jobs:
+  terraform_plan:
+    name: Plan
+    runs-on:
+    - ubuntu-22.04
+    outputs:
+      changes_exist: ${{ steps.check_changes.outputs.changes_exist }}
+      terraform_plan_s3_uri: ${{ steps.upload_plan.outputs.terraform_plan_s3_uri }}
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+
+    - name: Install Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: 16
+
+    - name: AWS session name
+      id: session-name
+      shell: bash
+      run: echo "aws_role_session_name=github-actions-$(echo $GITHUB_ACTOR | sed -E 's/[^[:alnum:]]*//g')" >> $GITHUB_OUTPUT
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v1-node16
+      with:
+        role-to-assume: ${{ env.aws_iam_role_arn }}
+        aws-region: ${{ env.aws_region }}
+        role-session-name: ${{ steps.session-name.outputs.aws_role_session_name }}
+        mask-aws-account-id: false
+
+    - name: Setup Terraform v${{ env.terraform_version }}
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: ${{ env.terraform_version }}
+        terraform_wrapper: false
+
+    - name: Terraform Init
+      id: init
+      working-directory: ${{ env.terraform_module_path }}
+      shell: bash
+      run: terraform init -backend-config ../backends/sandbox/010_module_a.tfvars
+
+    - name: Terraform Validate
+      id: validate
+      working-directory: ${{ env.terraform_module_path }}
+      shell: bash
+      run: terraform validate -no-color
+
+    - name: Terraform Plan
+      id: plan
+      working-directory: ${{ env.terraform_module_path }}
+      shell: bash
+      run: |
+        terraform plan -var-file ../environments/common.tfvars -var-file ../environments/sandbox.tfvars -input=false -no-color -out $(pwd)/tfplan.bin
+        terraform show -no-color tfplan.bin 2>&1 > tfplan.txt
+
+    - name: Check if there are changes
+      id: check_changes
+      working-directory: ${{ env.terraform_module_path }}
+      shell: bash
+      run: |
+        if cat tfplan.txt | grep "No changes. Your infrastructure matches the configuration."; then 
+          echo "changes_exist=no" >> $GITHUB_OUTPUT
+        else 
+          echo "changes_exist=yes" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Upload plan to bucket
+      id: upload_plan
+      working-directory: ${{ env.terraform_module_path }}
+      shell: bash
+      run: |
+        TERRAFORM_PLAN_S3_KEY_PREFIX="${{ env.terraform_plan_bucket_prefix }}/$(echo $GITHUB_REPOSITORY | sed -E 's/[^[:alnum:]]*//g')_$(echo $GITHUB_WORKFLOW | sed -E 's/[^[:alnum:]]*//g')_${GITHUB_SHA}_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+        aws s3 cp tfplan.bin s3://${{ env.terraform_plan_bucket_name }}/${TERRAFORM_PLAN_S3_KEY_PREFIX}/tfplan.bin --sse AES256 --expires $(date -d "15 days" -Iseconds)
+        aws s3 cp tfplan.txt s3://${{ env.terraform_plan_bucket_name }}/${TERRAFORM_PLAN_S3_KEY_PREFIX}/tfplan.txt --sse AES256 --expires $(date -d "15 days" -Iseconds)
+        echo "terraform_plan_s3_uri=s3://${{ env.terraform_plan_bucket_name }}/${TERRAFORM_PLAN_S3_KEY_PREFIX}/tfplan.bin" >> $GITHUB_OUTPUT
+        echo "terraform_plan_s3_url=https://${{ env.terraform_plan_bucket_name }}.s3.amazonaws.com/${TERRAFORM_PLAN_S3_KEY_PREFIX}/tfplan.bin" >> $GITHUB_OUTPUT
+        echo "terraform_plan_s3_console_url=https://s3.console.aws.amazon.com/s3/object/${{ env.terraform_plan_bucket_name }}?prefix=${TERRAFORM_PLAN_S3_KEY_PREFIX}/tfplan.bin" >> $GITHUB_OUTPUT
+    
+    - name: Add Terraform plan to job summary
+      working-directory: ${{ env.terraform_module_path }}
+      shell: bash
+      run: |
+        cat << EOF >> $GITHUB_STEP_SUMMARY
+        # Terraform plan
+        Terraform plan uploaded to [${{ steps.upload_plan.outputs.terraform_plan_s3_uri }}](${{ steps.upload_plan.outputs.terraform_plan_s3_console_url }})
+        \`\`\`diff
+        $(cat tfplan.txt | sed -E 's/^[[:space:]]([[:space:]]+)([-+])/\2\1\2/g' | sed -E 's/^[[:space:]](.*(must be replaced|forces replacement))/!\1/g')
+        \`\`\`
+        EOF
+
+  terraform_apply:
+    name: Apply
+    runs-on: 
+    - ubuntu-22.04
+    environment: "sandbox"
+    needs:
+    - terraform_plan
+    if: ${{ needs.terraform_plan.outputs.changes_exist == 'yes' }}
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+
+    - name: Install Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: 16
+
+    - name: AWS session name
+      id: session-name
+      shell: bash
+      run: echo "aws_role_session_name=github-actions-$(echo $GITHUB_ACTOR | sed -E 's/[^[:alnum:]]*//g')" >> $GITHUB_OUTPUT
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v1-node16
+      with:
+        role-to-assume: ${{ env.aws_iam_role_arn }}
+        aws-region: ${{ env.aws_region }}
+        role-session-name: ${{ steps.session-name.outputs.aws_role_session_name }}
+        mask-aws-account-id: false
+
+    - name: Setup Terraform v${{ env.terraform_version }}
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: ${{ env.terraform_version }}
+        terraform_wrapper: false
+        
+    - name: Terraform Init
+      id: init
+      working-directory: ${{ env.terraform_module_path }}
+      shell: bash
+      run: terraform init -backend-config ../backends/sandbox/010_module_a.tfvars
+
+    - name: Download plan from bucket
+      working-directory: ${{ env.terraform_module_path }}
+      shell: bash
+      run: aws s3 cp ${{ needs.terraform_plan.outputs.terraform_plan_s3_uri }} tfplan.bin
+
+    - name: Terraform apply
+      working-directory: ${{ env.terraform_module_path }}
+      shell: bash
+      run: terraform apply -auto-approve tfplan.bin

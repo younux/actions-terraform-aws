@@ -1,0 +1,168 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: "Stack to create Terraform S3 backend resources."
+  
+Parameters:
+  BucketName:
+    Description: Terraform S3 backend bucket name.
+    Type: String
+  DynamoDbTableName:
+    Description: Terraform S3 backend DynamoDB table name used for state locking.
+    Type: String
+
+Resources:
+  Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref BucketName
+      AccessControl: Private
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: 
+              SSEAlgorithm: AES256
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership : BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      Tags:
+      - Key: Name
+        Value: !Ref BucketName
+
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref Bucket
+      PolicyDocument: !Sub |
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "EnforceTlsRequests",
+              "Effect": "Deny",
+              "Principal": "*",
+              "Action": "s3:*",
+              "Resource": [
+                "arn:aws:s3:::${BucketName}",
+                "arn:aws:s3:::${BucketName}/*"
+              ],
+              "Condition": {
+                "Bool": {
+                  "aws:SecureTransport": "false"
+                }
+              }
+            },
+            {
+              "Sid": "EnforceTlsv12orHigher",
+              "Effect": "Deny",
+              "Principal": "*",
+              "Action": "s3:*",
+              "Resource": [
+                "arn:aws:s3:::${BucketName}",
+                "arn:aws:s3:::${BucketName}/*"
+              ],
+              "Condition": {
+                "NumericLessThan": {
+                  "s3:TlsVersion": 1.2
+                }
+              }
+            },
+            {
+              "Sid": "EnforceServerSideEncryption",
+              "Effect": "Deny",
+              "Principal": "*",
+              "Action": "s3:PutObject",
+              "Resource": "arn:aws:s3:::${BucketName}/*",
+              "Condition": {
+                "Null": {
+                  "s3:x-amz-server-side-encryption": true
+                }
+              }
+            },
+            {
+              "Sid": "EnforceServerSideEncryptionS3Managed",
+              "Effect": "Deny",
+              "Principal": "*",
+              "Action": "s3:PutObject",
+              "Resource": "arn:aws:s3:::${BucketName}/*",
+              "Condition": {
+                "StringNotEquals": {
+                  "s3:x-amz-server-side-encryption": "AES256"
+                }
+              }
+            }
+          ]
+        }
+
+  DynamoDbTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions:
+      - AttributeName: LockID
+        AttributeType: S
+      BillingMode: "PAY_PER_REQUEST"
+      KeySchema: 
+        - AttributeName: LockID
+          KeyType: HASH
+      TableClass: "STANDARD"
+      TableName: !Ref DynamoDbTableName
+      Tags:
+      - Key: Name
+        Value: !Ref DynamoDbTableName
+
+  TerraformS3BackendIamPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: !Sub "IAM Policy to be used by Terraform to access S3 backend bucket ${BucketName} and DynamoDB table ${DynamoDbTable}."
+      ManagedPolicyName: !Sub terraform-s3-backend-${BucketName}
+      PolicyDocument: !Sub |
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "s3:ListBucket",
+              "Resource": "${Bucket.Arn}"
+            },
+            {
+              "Effect": "Allow",
+              "Action": [
+                "s3:GetObject",
+                "s3:PutObject",
+                "s3:DeleteObject"
+              ],
+              "Resource": "${Bucket.Arn}/*"
+            },
+            {
+              "Effect": "Allow",
+              "Action": [
+                "dynamodb:DescribeTable",
+                "dynamodb:GetItem",
+                "dynamodb:PutItem",
+                "dynamodb:DeleteItem"
+              ],
+              "Resource": "${DynamoDbTable.Arn}"
+            } 
+          ]
+        }
+
+Outputs:
+  BucketName:
+    Description: Bucket Name
+    Value: !Ref Bucket
+  BucketArn:
+    Description: Bucket ARN
+    Value: !GetAtt Bucket.Arn
+  DynamoDbTableName:
+    Description: DynamoDB table name
+    Value: !Ref DynamoDbTable
+  DynamoDbTableArn:
+    Description: DynamoDB table ARN
+    Value: !GetAtt DynamoDbTable.Arn
+  TerraformS3BackendIamPolicyArn:
+    Description: IAM Policy to be used by Terraform to access S3 Backend resources
+    Value: !Ref TerraformS3BackendIamPolicy
