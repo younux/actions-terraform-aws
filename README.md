@@ -31,7 +31,7 @@ aws cloudformation deploy --region $REGION  \
 ### 2 - GitHub Actions OIDC IAM Provider and IAM Role
 
 In order to give Github Actions workflows permission to act on AWS resources, you need to create some resources in your AWS account. For more information, please refer
-to Walnut documentation [Configuring OpenID Connect in Amazon Web Services](https://docs.github.com/en/actions/deployment/security-hardening-your-deployments/configuring-openid-connect-in-amazon-web-services)
+to Github documentation [Configuring OpenID Connect in Amazon Web Services](https://docs.github.com/en/actions/deployment/security-hardening-your-deployments/configuring-openid-connect-in-amazon-web-services)
 
 [github_actions_cfn.yaml](./prerequisites/github_actions_cfn.yaml) contains an example CloudFormation template that creates an OIDC IAM Provider and an IAM Role that can be assumed by Github Actions.
 
