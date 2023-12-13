@@ -14,6 +14,8 @@ crash.*.log
 .terraformrc
 terraform.rc
 
-# 
+#
 *tfplan.bin
 *tfplan.txt
+
+.DS_store
